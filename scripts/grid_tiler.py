@@ -36,6 +36,24 @@ def page_size(pdf,page):
             except Exception: pass
     return None
 
+def decide(mode, pf, min_long_edge):
+    """Return (do_tile:bool, reason:str). Auto = decide from size/orientation/text-layer."""
+    s1=pf.get("rev1_size_pt"); s2=pf.get("rev2_size_pt")
+    if not s1 or not s2 or pf.get("rev1_pages",0)<1 or pf.get("rev2_pages",0)<1:
+        return False, "Input is not a standard PDF (or unreadable) - using exact-text / whole-file path."
+    if mode=="force_off": return False, "Tiling disabled (force_off)."
+    if mode=="force_on":  return True,  "Tiling forced on (force_on)."
+    # auto
+    le=max(max(s1),max(s2)); reasons=[]
+    if le>min_long_edge: reasons.append("large sheet (long edge %dpt > %dpt)"%(int(le),int(min_long_edge)))
+    a1=s1[0]*s1[1]; a2=s2[0]*s2[1]
+    if abs(a1-a2)/max(a1,a2)>0.15: reasons.append("sheet-size mismatch (registration needed)")
+    if (s1[1]>s1[0])!=(s2[1]>s2[0]): reasons.append("orientation mismatch (registration needed)")
+    if (not pf.get("rev1_has_text") or not pf.get("rev2_has_text")) and le>1000:
+        reasons.append("a revision lacks a text layer")
+    if reasons: return True, "Tiled because: " + "; ".join(reasons) + "."
+    return False, "Small, like-for-like, legible PDF (long edge %dpt) - sent whole; no tiling needed."%int(le)
+
 def preflight(rev1,rev2):
     p1,p2=npages(rev1),npages(rev2)
     t1,t2=has_text(rev1),has_text(rev2)
@@ -164,8 +182,19 @@ if __name__=="__main__":
     ap.add_argument("rev1"); ap.add_argument("rev2")
     ap.add_argument("--cols",type=int,default=4); ap.add_argument("--rows",type=int,default=3)
     ap.add_argument("--dpi",type=int,default=170); ap.add_argument("--out",default="-")
+    ap.add_argument("--mode",default="auto",choices=["auto","force_on","force_off"])
+    ap.add_argument("--min-long-edge-pt",type=float,default=1400.0)
     a=ap.parse_args()
-    res=process(a.rev1,a.rev2,a.cols,a.rows,a.dpi)
+    pf=preflight(a.rev1,a.rev2)
+    do_tile,reason=decide(a.mode,pf,a.min_long_edge_pt)
+    if do_tile:
+        res=process(a.rev1,a.rev2,a.cols,a.rows,a.dpi)
+        res["decision"]={"tiled":True,"reason":reason,"mode":a.mode}
+    else:
+        res={"meta":{"comparable":True,"min_registration_score":None},
+             "preflight":pf,"warnings":list(pf["notes"]),
+             "decision":{"tiled":False,"reason":reason,"mode":a.mode},
+             "pages":[],"zones":[]}
     js=json.dumps(res)
     if a.out=="-": sys.stdout.write(js)
     else: open(a.out,"w").write(js)
